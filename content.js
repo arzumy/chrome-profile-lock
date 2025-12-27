@@ -4,16 +4,22 @@ let lockOverlay = null;
 let isLocked = true;
 let blurStyle = null;
 let guardInterval = null;
+let devToolsInterval = null;
+let resizeHandler = null;
+let keydownHandler = null;
+let visibilityHandler = null;
+let messageHandler = null;
 
 // Check lock state immediately
 checkLockState();
 
 // Listen for lock state changes from background
-chrome.runtime.onMessage.addListener((message) => {
+messageHandler = (message) => {
   if (message.action === 'lockStateChanged') {
     checkLockState();
   }
-});
+};
+chrome.runtime.onMessage.addListener(messageHandler);
 
 function checkLockState() {
   chrome.runtime.sendMessage({ action: 'getLockState' }, (response) => {
@@ -33,6 +39,8 @@ function checkLockState() {
         hideLockOverlay();
         removeBlur();
         stopGuard();
+        stopDevToolsDetection();
+        removeEventListeners();
       }
     }
   });
@@ -70,8 +78,13 @@ function removeBlur() {
 function startGuard() {
   if (guardInterval) return;
   
+  // Reduced frequency from 50ms to 300ms for better performance
+  // Still responsive but much less CPU intensive (3.3 checks/sec vs 20 checks/sec)
   guardInterval = setInterval(() => {
-    if (!isLocked) return;
+    if (!isLocked) {
+      stopGuard();
+      return;
+    }
     
     // Re-inject overlay if removed
     if (!document.getElementById('profile-lock-overlay')) {
@@ -85,12 +98,14 @@ function startGuard() {
       applyBlur();
     }
     
-    // Ensure overlay is still on top
-    const overlay = document.getElementById('profile-lock-overlay');
-    if (overlay && overlay.parentNode !== document.body?.firstChild) {
-      document.body?.insertBefore(overlay, document.body.firstChild);
+    // Ensure overlay is still on top (only check if body exists)
+    if (document.body) {
+      const overlay = document.getElementById('profile-lock-overlay');
+      if (overlay && overlay.parentNode !== document.body && document.body.firstChild) {
+        document.body.insertBefore(overlay, document.body.firstChild);
+      }
     }
-  }, 50); // Check every 50ms
+  }, 300); // Check every 300ms (optimized from 50ms)
 }
 
 function stopGuard() {
@@ -100,28 +115,27 @@ function stopGuard() {
   }
 }
 
+function stopDevToolsDetection() {
+  if (devToolsInterval) {
+    clearInterval(devToolsInterval);
+    devToolsInterval = null;
+  }
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler);
+    resizeHandler = null;
+  }
+}
+
 // === MITIGATION #1: Detect DevTools ===
 function startDevToolsDetection() {
-  // Method 1: Detect debugger statement timing
-  const detectDebugger = () => {
-    if (!isLocked) return;
-    
-    const start = performance.now();
-    debugger;
-    const end = performance.now();
-    
-    // If debugger paused, this took longer than 100ms
-    if (end - start > 100) {
-      onDevToolsDetected();
+  if (devToolsInterval || resizeHandler) return; // Already started
+  
+  // Method 1: Detect window size changes (docked DevTools)
+  resizeHandler = () => {
+    if (!isLocked) {
+      stopDevToolsDetection();
+      return;
     }
-  };
-  
-  // Method 2: Detect window size changes (docked DevTools)
-  let lastWidth = window.outerWidth;
-  let lastHeight = window.outerHeight;
-  
-  const detectResize = () => {
-    if (!isLocked) return;
     
     const widthDiff = Math.abs(window.outerWidth - window.innerWidth);
     const heightDiff = Math.abs(window.outerHeight - window.innerHeight);
@@ -132,29 +146,43 @@ function startDevToolsDetection() {
     }
   };
   
-  // Method 3: Detect console.log interception
+  // Method 2: Detect console.log interception (removed console.log to avoid output)
+  // Using a no-op console method to avoid console output
   const detectConsole = () => {
-    const element = new Image();
-    Object.defineProperty(element, 'id', {
-      get: function() {
-        onDevToolsDetected();
-        return 'devtools-trap';
+    if (!isLocked) return;
+    
+    try {
+      const element = new Image();
+      let detected = false;
+      Object.defineProperty(element, 'id', {
+        get: function() {
+          if (!detected) {
+            detected = true;
+            onDevToolsDetected();
+          }
+          return 'devtools-trap';
+        }
+      });
+      // Use console.debug instead of console.log to reduce noise
+      // This still triggers the getter if DevTools is open
+      if (console.debug) {
+        console.debug('%c', element);
       }
-    });
-    console.log('%c', element);
+    } catch (e) {
+      // Silently fail if console is not available
+    }
   };
   
-  // Run detection periodically
-  setInterval(() => {
-    if (!isLocked) return;
-    detectResize();
+  // Run detection periodically (reduced frequency)
+  devToolsInterval = setInterval(() => {
+    if (!isLocked) {
+      stopDevToolsDetection();
+      return;
+    }
     detectConsole();
-  }, 1000);
+  }, 2000); // Reduced from 1000ms to 2000ms for better performance
   
-  // Uncomment below to use debugger detection (intrusive - causes pauses)
-  // setInterval(detectDebugger, 3000);
-  
-  window.addEventListener('resize', detectResize);
+  window.addEventListener('resize', resizeHandler);
 }
 
 function onDevToolsDetected() {
@@ -190,30 +218,55 @@ function onDevToolsDetected() {
 function showLockOverlay() {
   if (lockOverlay) return;
   
+  // Use createElement instead of innerHTML for better security and performance
   lockOverlay = document.createElement('div');
   lockOverlay.id = 'profile-lock-overlay';
-  lockOverlay.innerHTML = `
-    <div class="lock-container">
-      <div class="lock-icon">🔒</div>
-      <h1>Profile Locked</h1>
-      <p>Enter your password to unlock this profile</p>
-      <form id="unlock-form">
-        <input type="password" id="unlock-password" placeholder="Password" autocomplete="off" />
-        <button type="submit">Unlock</button>
-      </form>
-      <div id="unlock-error" class="error-message"></div>
-    </div>
-  `;
+  
+  const container = document.createElement('div');
+  container.className = 'lock-container';
+  
+  const icon = document.createElement('div');
+  icon.className = 'lock-icon';
+  icon.textContent = '🔒';
+  
+  const h1 = document.createElement('h1');
+  h1.textContent = 'Profile Locked';
+  
+  const p = document.createElement('p');
+  p.textContent = 'Enter your password to unlock this profile';
+  
+  const form = document.createElement('form');
+  form.id = 'unlock-form';
+  
+  const passwordInput = document.createElement('input');
+  passwordInput.type = 'password';
+  passwordInput.id = 'unlock-password';
+  passwordInput.placeholder = 'Password';
+  passwordInput.autocomplete = 'off';
+  
+  const button = document.createElement('button');
+  button.type = 'submit';
+  button.textContent = 'Unlock';
+  
+  const errorDiv = document.createElement('div');
+  errorDiv.id = 'unlock-error';
+  errorDiv.className = 'error-message';
+  
+  form.appendChild(passwordInput);
+  form.appendChild(button);
+  
+  container.appendChild(icon);
+  container.appendChild(h1);
+  container.appendChild(p);
+  container.appendChild(form);
+  container.appendChild(errorDiv);
+  lockOverlay.appendChild(container);
   
   if (document.body) {
     document.body.insertBefore(lockOverlay, document.body.firstChild);
   } else {
     document.documentElement.appendChild(lockOverlay);
   }
-  
-  const form = lockOverlay.querySelector('#unlock-form');
-  const passwordInput = lockOverlay.querySelector('#unlock-password');
-  const errorDiv = lockOverlay.querySelector('#unlock-error');
   
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -229,6 +282,8 @@ function showLockOverlay() {
         hideLockOverlay();
         removeBlur();
         stopGuard();
+        stopDevToolsDetection();
+        removeEventListeners();
       } else {
         errorDiv.textContent = response?.error || 'Incorrect password';
         passwordInput.value = '';
@@ -247,6 +302,9 @@ function showLockOverlay() {
   
   // Block right-click context menu on overlay
   lockOverlay.addEventListener('contextmenu', (e) => e.preventDefault());
+  
+  // Attach keyboard blocking when locked
+  attachEventListeners();
 }
 
 function hideLockOverlay() {
@@ -256,31 +314,60 @@ function hideLockOverlay() {
   }
 }
 
-// Re-check on visibility change
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
-    checkLockState();
-  }
-});
+// Attach event listeners only when locked
+function attachEventListeners() {
+  if (keydownHandler || visibilityHandler) return; // Already attached
+  
+  // Re-check on visibility change
+  visibilityHandler = () => {
+    if (document.visibilityState === 'visible') {
+      checkLockState();
+    }
+  };
+  document.addEventListener('visibilitychange', visibilityHandler);
+  
+  // Block keyboard shortcuts that might open DevTools
+  keydownHandler = (e) => {
+    if (!isLocked) {
+      removeEventListeners();
+      return;
+    }
+    
+    // Block F12
+    if (e.key === 'F12') {
+      e.preventDefault();
+      onDevToolsDetected();
+    }
+    
+    // Block Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C
+    if (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key.toUpperCase())) {
+      e.preventDefault();
+      onDevToolsDetected();
+    }
+    
+    // Block Ctrl+U (view source)
+    if (e.ctrlKey && e.key.toUpperCase() === 'U') {
+      e.preventDefault();
+    }
+  };
+  document.addEventListener('keydown', keydownHandler, true);
+}
 
-// Block keyboard shortcuts that might open DevTools
-document.addEventListener('keydown', (e) => {
-  if (!isLocked) return;
-  
-  // Block F12
-  if (e.key === 'F12') {
-    e.preventDefault();
-    onDevToolsDetected();
+// Remove event listeners when unlocked
+function removeEventListeners() {
+  if (keydownHandler) {
+    document.removeEventListener('keydown', keydownHandler, true);
+    keydownHandler = null;
   }
-  
-  // Block Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C
-  if (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key.toUpperCase())) {
-    e.preventDefault();
-    onDevToolsDetected();
+  if (visibilityHandler) {
+    document.removeEventListener('visibilitychange', visibilityHandler);
+    visibilityHandler = null;
   }
-  
-  // Block Ctrl+U (view source)
-  if (e.ctrlKey && e.key.toUpperCase() === 'U') {
-    e.preventDefault();
-  }
-}, true);
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  stopGuard();
+  stopDevToolsDetection();
+  removeEventListeners();
+});
