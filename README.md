@@ -19,6 +19,7 @@ A Chrome extension that locks your browser profile with a password for privacy p
 3. Click **Load unpacked**
 4. Select the `chrome-profile-lock` folder
 5. The extension icon will appear in your toolbar
+6. Restart the browser after installation
 
 ### Method 2: Pack as .crx (for distribution)
 
@@ -27,6 +28,7 @@ A Chrome extension that locks your browser profile with a password for privacy p
 3. Click **Pack extension**
 4. Select the `chrome-profile-lock` folder
 5. This creates a `.crx` file you can share
+6. Restart the browser after installation
 
 ## Usage
 
