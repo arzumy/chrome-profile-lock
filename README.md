@@ -24,12 +24,10 @@ A Chrome extension that locks your browser profile with a password for privacy p
 
 1. **Download the extension:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/chrome-profile-lock.git
+   git clone https://github.com/arzumy/chrome-profile-lock.git
    cd chrome-profile-lock
    ```
    Or download as ZIP from the repository and extract it.
-   
-   > **Note:** Replace `YOUR_USERNAME` with your actual GitHub username after creating the repository.
 
 2. **Load in Chrome:**
    - Open Chrome and navigate to `chrome://extensions/`
